@@ -12,8 +12,8 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Syntax(pos, surrounding) => {
-                write!(f, "Syntax error near position {pos} in ...{surrounding}...")
+            Error::Syntax(pos, errstr) => {
+                write!(f, "Syntax error near position {pos}: {errstr}")
             }
             Error::Data => write!(f, "Data error"),
             Error::IO(msg) => write!(f, "IO error {msg}"),
