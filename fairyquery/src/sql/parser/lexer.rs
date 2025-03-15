@@ -1,6 +1,6 @@
 use std::{fmt::Debug, iter::Peekable, str::Chars};
 
-use crate::error::{Error, Result};
+use crate::{error::Result, syntax_error};
 
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
@@ -182,14 +182,14 @@ impl Iterator for Lexer<'_> {
             Ok(None) => self
                 .chars
                 .peek()
-                .map(|c| Error::Syntax(0, format!("unexpected character: {}", c)).into()),
+                .map(|c| syntax_error!(0, "unexpected character: {}", c)),
             Err(e) => Some(Err(e)),
         }
     }
 }
 
 impl<'a> Lexer<'a> {
-    fn new(input: &'a str) -> Self {
+    pub fn new(input: &'a str) -> Self {
         Self {
             chars: input.chars().peekable(),
         }
@@ -228,10 +228,7 @@ impl<'a> Lexer<'a> {
                 Some('\'') => break,
                 Some(c) => literal.push(c),
                 None => {
-                    return Err(Error::Syntax(
-                        0,
-                        "unexpected end of literal string".to_string(),
-                    ));
+                    return syntax_error!(0, "unexpected end of literal string");
                 }
             }
         }
@@ -255,10 +252,7 @@ impl<'a> Lexer<'a> {
                 Some('"') => break,
                 Some(c) => ident.push(c),
                 None => {
-                    return Err(Error::Syntax(
-                        0,
-                        "unexpected end of quoted identifier".to_string(),
-                    ));
+                    return syntax_error!(0, "unexpected end of quoted identifier");
                 }
             }
         }
@@ -310,7 +304,7 @@ impl<'a> Lexer<'a> {
 
     /// scan any symbol token
     fn scan_symbol(&mut self) -> Option<Token> {
-        let mut token = match self.chars.next()? {
+        let mut token = match self.chars.peek()? {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             ':' => Token::Colon,
@@ -331,6 +325,8 @@ impl<'a> Lexer<'a> {
             '=' => Token::Equal,
             _ => return None,
         };
+        // advance the iterator to consume the character processed earlier
+        self.chars.next()?;
 
         // handle two char tokens
         token = match token {
@@ -351,12 +347,31 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
 
+    fn into_tokens(input: &str) -> Result<Vec<Token>> {
+        Lexer::new(input).collect()
+    }
+
+    #[test]
+    fn errors_on_unterminated_literal() {
+        let tokens = into_tokens("SELECT 'hello");
+        assert_eq!(tokens, syntax_error!(0, "unexpected end of literal string"));
+    }
+
+    #[test]
+    fn errors_on_expected_character() {
+        let tokens = into_tokens("SELECT čšě");
+        assert_eq!(tokens, syntax_error!(0, "unexpected character: č"));
+    }
+
+    #[test]
+    fn errors_on_expected_character_in_middle() {
+        let tokens = into_tokens("SELčECT");
+        assert_eq!(tokens, syntax_error!(0, "unexpected character: č"));
+    }
+
     #[test]
     fn can_scan_symbols() {
-        let lexer = Lexer::new("  >=  &  ! != <> * ; ,.+-");
-        let tokens = lexer
-            .collect::<Result<Vec<_>>>()
-            .expect("Failed to collect tokens");
+        let tokens = into_tokens("  >=  &  ! != <> * ; ,.+-").expect("Failed to collect tokens");
 
         let expected = vec![
             Token::GreaterThanOrEqual,
@@ -376,10 +391,7 @@ mod tests {
 
     #[test]
     fn can_scan_literal() {
-        let lexer = Lexer::new("'hello, world!'");
-        let tokens = lexer
-            .collect::<Result<Vec<_>>>()
-            .expect("Failed to collect tokens");
+        let tokens = into_tokens("'hello, world!'").expect("Failed to collect tokens");
 
         let expected = vec![Token::String("hello, world!".to_string())];
         assert_eq!(tokens, expected, "Failed to scan string literal");
@@ -387,10 +399,7 @@ mod tests {
 
     #[test]
     fn can_scan_literal_with_escape() {
-        let lexer = Lexer::new("'hello, ''world''!'");
-        let tokens = lexer
-            .collect::<Result<Vec<_>>>()
-            .expect("Failed to collect tokens");
+        let tokens = into_tokens("'hello, ''world''!'").expect("Failed to collect tokens");
 
         let expected = vec![Token::String("hello, 'world'!".to_string())];
         assert_eq!(tokens, expected, "Failed scanning escaped literal");

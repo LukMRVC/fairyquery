@@ -28,3 +28,10 @@ impl<T> From<Error> for Result<T> {
         Err(err)
     }
 }
+
+#[macro_export]
+macro_rules! syntax_error {
+    ($pos:expr, $($args:tt)*) => {
+        crate::error::Error::Syntax($pos, format!($($args)*)).into()
+    };
+}
