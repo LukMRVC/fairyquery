@@ -3,8 +3,158 @@ use crate::{error::Result, syntax_error};
 use super::{Keyword, Lexer, Token, ast};
 use std::{
     fmt::{Debug, Display},
-    iter::Peekable,
+    iter::Peekable, path::Prefix,
 };
+
+/// Operator precedence
+type Precedence = u8;
+
+/// Operator associativity
+const LEFT_ASSOCIATIVE: Precedence = 1;
+const RIGHT_ASSOCIATIVE: Precedence = 0;
+
+
+trait Operator {
+    fn precedence(&self) -> Precedence;
+    fn associativity(&self) -> Precedence;
+}
+
+trait UnaryOperator: Operator {
+    fn build(self, ohs: ast::Expression) -> ast::Expression;
+}
+
+
+
+trait BinaryOperator: Operator {
+    fn build(self, lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression;
+}
+
+
+enum PrefixOperator {
+    Not, // NOT <expr>
+    Plus, // +<expr>
+    Minus, // -<expr>
+}
+
+impl Operator for PrefixOperator {
+    fn precedence(&self) -> Precedence {
+        match self {
+            Self::Not => 3,
+            _ => 10,
+        }
+    }
+
+    fn associativity(&self) -> Precedence {
+        RIGHT_ASSOCIATIVE
+    }
+}
+
+impl UnaryOperator for PrefixOperator {
+    fn build(self, rhs: ast::Expression) -> ast::Expression {
+        let rhs = Box::new(rhs);
+        match self {
+            Self::Not => ast::Operator::Not(rhs).into(),
+            Self::Plus => ast::Operator::Identity(rhs).into(),
+            Self::Minus => ast::Operator::Negate(rhs).into(),
+        }
+    }
+}
+
+enum InfixOperator {
+    Add, // <expr> + <expr>
+    Subtract, // <expr> - <expr>
+    Multiply, // <expr> * <expr>
+    Divide, // <expr> / <expr>
+    Modulo, // <expr> % <expr>
+    And, // <expr> AND <expr>
+    Or, // <expr> OR <expr>
+    Equals, // <expr> = <expr>
+    NotEquals, // <expr> != <expr>
+    LessThan, // <expr> < <expr>
+    LessThanOrEquals, // <expr> <= <expr>
+    GreaterThan, // <expr> > <expr>
+    GreaterThanOrEquals, // <expr> >= <expr>
+    Like, // <expr> LIKE <expr>
+    Exponentiate, // <expr> ^ <expr>
+}
+
+impl Operator for InfixOperator {
+    fn precedence(&self) -> Precedence {
+        match self {
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Equals | Self::NotEquals | Self::Like => 4,
+            Self::LessThan | Self::LessThanOrEquals | Self::GreaterThan | Self::GreaterThanOrEquals => 5,
+            Self::Add | Self::Subtract => 6,
+            Self::Multiply | Self::Divide | Self::Modulo => 7,
+            Self::Exponentiate => 8,
+        }
+    }
+
+    fn associativity(&self) -> Precedence {
+        match self {
+            Self::Exponentiate => RIGHT_ASSOCIATIVE,
+            _ => LEFT_ASSOCIATIVE,
+        }
+    }
+}
+
+impl BinaryOperator for InfixOperator {
+    fn build(self, lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
+        let (lhs, rhs) = (Box::new(lhs), Box::new(rhs));
+        match self {
+            Self::Add => ast::Operator::Add(lhs, rhs).into(),
+            Self::Subtract => ast::Operator::Subtract(lhs, rhs).into(),
+            Self::Multiply => ast::Operator::Multiply(lhs, rhs).into(),
+            Self::Divide => ast::Operator::Divide(lhs, rhs).into(),
+            Self::Modulo => ast::Operator::Modulo(lhs, rhs).into(),
+            Self::And => ast::Operator::And(lhs, rhs).into(),
+            Self::Or => ast::Operator::Or(lhs, rhs).into(),
+            Self::Equals => ast::Operator::Equals(lhs, rhs).into(),
+            Self::NotEquals => ast::Operator::NotEquals(lhs, rhs).into(),
+            Self::LessThan => ast::Operator::LessThan(lhs, rhs).into(),
+            Self::LessThanOrEquals => ast::Operator::LessThanOrEquals(lhs, rhs).into(),
+            Self::GreaterThan => ast::Operator::GreaterThan(lhs, rhs).into(),
+            Self::GreaterThanOrEquals => ast::Operator::GreaterThanOrEquals(lhs, rhs).into(),
+            Self::Like => ast::Operator::Like(lhs, rhs).into(),
+            Self::Exponentiate => ast::Operator::Exponentiate(lhs, rhs).into(),
+        }
+    }
+}
+
+enum PostfixOperator {
+    Factorial, // <expr>!
+    Is(ast::Literal), // <expr> IS <literal>
+    IsNot(ast::Literal), // <expr> IS NOT <literal>
+}
+
+impl Operator for PostfixOperator {
+    fn precedence(&self) -> Precedence {
+        match self {
+            Self::Is(_) | Self::IsNot(_) => 4,
+            Self::Factorial => 9,
+        }
+    }
+
+    fn associativity(&self) -> Precedence {
+        match self {
+            Self::Is(_) | Self::IsNot(_) => LEFT_ASSOCIATIVE,
+            Self::Factorial => RIGHT_ASSOCIATIVE,
+        }
+    }
+}
+
+impl UnaryOperator for PostfixOperator {
+    fn build(self, ohs: ast::Expression) -> ast::Expression {
+        let lhs = Box::new(ohs);
+        match self {
+            Self::Factorial => ast::Operator::Factorial(lhs).into(),
+            Self::Is(literal) => ast::Operator::Is(lhs, literal).into(),
+            Self::IsNot(literal) => ast::Operator::Not(ast::Operator::Is(lhs, literal).into()).into()            
+        }
+    }
+}
+
 
 /// The `Parser` struct is responsible for parsing SQL queries.
 /// It takes a lexer as input and processes the tokens to generate
@@ -95,7 +245,7 @@ impl Parser<'_> {
         }
 
         loop {
-            let expression = self.parse_expression()?;
+            let expression = self.parse_expression(0)?;
             let mut alias = None;
 
             if self.lexer.next_is(Keyword::As.into()) {
@@ -108,8 +258,29 @@ impl Parser<'_> {
         todo!()
     }
 
-    fn parse_expression(&mut self) -> Result<ast::Expression> {
+    /// Parses an expression - it must contain at least one atomic element of expression.
+    /// The resulting expression is in easy to evaluate format
+    fn parse_expression(&mut self, min_precedence: Precedence) -> Result<ast::Expression> {
+        // first check for prefix (unary) operator. If there is one, get its rhs.
+        // Otherwise, get the lhs of the expression
+        let mut lhs = if let Some(prefix) = self.parse_prefix_operator(min_precedence) {
+
+        } 
+
+        
         todo!("Implement expression parsing")
+    }
+
+    fn parse_prefix_operator(&mut self, min_precedence: Precedence) -> Option<PrefixOperator> {
+        self.lexer.next_if_map(|token| {
+            let op = match token {
+                Token::Keyword(Keyword::Not) => PrefixOperator::Not,
+                Token::Plus => PrefixOperator::Plus,
+                Token::Minus => PrefixOperator::Minus,
+                _ => return None,
+            };
+            Some(op).filter(|op| op.precedence() >= min_precedence)
+        })
     }
 }
 
@@ -121,6 +292,7 @@ trait TokenPeekableExt {
     fn expect_next(&mut self, expected: Token) -> crate::error::Result<()>;
     fn next_is(&mut self, expected: Token) -> bool;
     fn next_ident(&mut self) -> crate::error::Result<Option<String>>;
+    fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T>;
 }
 
 impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for Peekable<I> {
@@ -150,5 +322,15 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
             Some(token) => syntax_error!(0, "Unexpected token: {token}, expect an identifier"),
             None => Ok(None),
         }
+    }
+
+    fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T> {
+        // Peek at the next token and map it if it exists call the mapping closure `f`
+        let next_mapped = self.peek_transposed().unwrap_or(None).map(f)?;
+        // if successful, consume the token
+        if next_mapped.is_some() {
+            self.next();
+        }
+        next_mapped
     }
 }

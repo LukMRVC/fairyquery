@@ -109,6 +109,7 @@ pub enum Keyword {
     Limit,
     Offset,
     As,
+    Not,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -150,6 +151,7 @@ impl std::fmt::Display for Keyword {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Insert => "INSERT",
+            Self::Not => "NOT",
             Self::Update => "UPDATE",
             Self::Delete => "DELETE",
             Self::Select => "SELECT",
