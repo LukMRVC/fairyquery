@@ -71,7 +71,7 @@ pub enum Expression {
     /// For all columns in a table (`*`)
     All,
     /// A column reference with optional alias
-    Column(String, Option<String>),
+    Column(Option<String>, String),
     /// A literal value
     Literal(Literal),
     /// Function call by name with arguments

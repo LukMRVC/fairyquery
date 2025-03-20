@@ -3,6 +3,8 @@
 pub enum Error {
     /// Input syntax error, mostly for SQL input
     Syntax(usize, String),
+    /// Invalid input from user
+    InvalidInput(String),
     /// Problem when decoding or encoding data
     Data,
     /// Problem with IO operations
@@ -17,6 +19,7 @@ impl std::fmt::Display for Error {
             }
             Error::Data => write!(f, "Data error"),
             Error::IO(msg) => write!(f, "IO error {msg}"),
+            Error::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
         }
     }
 }
@@ -35,3 +38,18 @@ macro_rules! syntax_error {
         crate::error::Error::Syntax($pos, format!($($args)*)).into()
     };
 }
+
+macro_rules! impl_from_error {
+    ($from:ty, $to:ident) => {
+        impl From<$from> for Error {
+            fn from(err: $from) -> Self {
+                Error::$to(err.to_string())
+            }
+        }
+    };
+}
+
+impl_from_error!(std::num::ParseIntError, InvalidInput);
+impl_from_error!(std::num::ParseFloatError, InvalidInput);
+impl_from_error!(std::num::TryFromIntError, InvalidInput);
+impl_from_error!(std::string::FromUtf8Error, InvalidInput);

@@ -46,6 +46,7 @@ pub enum Token {
     Pipe,                // |
     Question,            // ?
     Exclamation,         // !
+    Caret,               // ^
 }
 
 impl std::fmt::Display for Token {
@@ -77,6 +78,7 @@ impl std::fmt::Display for Token {
             Self::Question => "?",
             Self::Semicolon => ";",
             Self::Slash => "/",
+            Self::Caret => "^",
             Self::String(s) => s,
         })
     }
@@ -109,7 +111,14 @@ pub enum Keyword {
     Limit,
     Offset,
     As,
+    Is,
     Not,
+    True,
+    False,
+    Null,
+    NaN,
+    Infinity,
+    Like,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -141,6 +150,14 @@ impl TryFrom<&str> for Keyword {
             "limit" => Self::Limit,
             "offset" => Self::Offset,
             "as" => Self::As,
+            "not" => Self::Not,
+            "true" => Self::True,
+            "false" => Self::False,
+            "null" => Self::Null,
+            "is" => Self::Is,
+            "nan" => Self::NaN,
+            "infinity" => Self::Infinity,
+            "like" => Self::Like,
             // again, short-circuit here so Err is actually returned
             _ => return Err("not a keyword"),
         })
@@ -169,6 +186,13 @@ impl std::fmt::Display for Keyword {
             Self::Desc => "DESC",
             Self::Limit => "LIMIT",
             Self::Offset => "OFFSET",
+            Self::True => "TRUE",
+            Self::False => "FALSE",
+            Self::Null => "NULL",
+            Self::NaN => "NAN",
+            Self::Infinity => "INFINITY",
+            Self::Is => "IS",
+            Self::Like => "LIKE",
         })
     }
 }

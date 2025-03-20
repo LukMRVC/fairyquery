@@ -1,10 +1,7 @@
 use crate::{error::Result, syntax_error};
 
 use super::{Keyword, Lexer, Token, ast};
-use std::{
-    fmt::{Debug, Display},
-    iter::Peekable, path::Prefix,
-};
+use std::iter::Peekable;
 
 /// Operator precedence
 type Precedence = u8;
@@ -12,7 +9,6 @@ type Precedence = u8;
 /// Operator associativity
 const LEFT_ASSOCIATIVE: Precedence = 1;
 const RIGHT_ASSOCIATIVE: Precedence = 0;
-
 
 trait Operator {
     fn precedence(&self) -> Precedence;
@@ -23,16 +19,13 @@ trait UnaryOperator: Operator {
     fn build(self, ohs: ast::Expression) -> ast::Expression;
 }
 
-
-
 trait BinaryOperator: Operator {
     fn build(self, lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression;
 }
 
-
 enum PrefixOperator {
-    Not, // NOT <expr>
-    Plus, // +<expr>
+    Not,   // NOT <expr>
+    Plus,  // +<expr>
     Minus, // -<expr>
 }
 
@@ -61,21 +54,21 @@ impl UnaryOperator for PrefixOperator {
 }
 
 enum InfixOperator {
-    Add, // <expr> + <expr>
-    Subtract, // <expr> - <expr>
-    Multiply, // <expr> * <expr>
-    Divide, // <expr> / <expr>
-    Modulo, // <expr> % <expr>
-    And, // <expr> AND <expr>
-    Or, // <expr> OR <expr>
-    Equals, // <expr> = <expr>
-    NotEquals, // <expr> != <expr>
-    LessThan, // <expr> < <expr>
-    LessThanOrEquals, // <expr> <= <expr>
-    GreaterThan, // <expr> > <expr>
+    Add,                 // <expr> + <expr>
+    Subtract,            // <expr> - <expr>
+    Multiply,            // <expr> * <expr>
+    Divide,              // <expr> / <expr>
+    Modulo,              // <expr> % <expr>
+    And,                 // <expr> AND <expr>
+    Or,                  // <expr> OR <expr>
+    Equals,              // <expr> = <expr>
+    NotEquals,           // <expr> != <expr>
+    LessThan,            // <expr> < <expr>
+    LessThanOrEquals,    // <expr> <= <expr>
+    GreaterThan,         // <expr> > <expr>
     GreaterThanOrEquals, // <expr> >= <expr>
-    Like, // <expr> LIKE <expr>
-    Exponentiate, // <expr> ^ <expr>
+    Like,                // <expr> LIKE <expr>
+    Exponentiate,        // <expr> ^ <expr>
 }
 
 impl Operator for InfixOperator {
@@ -84,7 +77,10 @@ impl Operator for InfixOperator {
             Self::Or => 1,
             Self::And => 2,
             Self::Equals | Self::NotEquals | Self::Like => 4,
-            Self::LessThan | Self::LessThanOrEquals | Self::GreaterThan | Self::GreaterThanOrEquals => 5,
+            Self::LessThan
+            | Self::LessThanOrEquals
+            | Self::GreaterThan
+            | Self::GreaterThanOrEquals => 5,
             Self::Add | Self::Subtract => 6,
             Self::Multiply | Self::Divide | Self::Modulo => 7,
             Self::Exponentiate => 8,
@@ -123,8 +119,8 @@ impl BinaryOperator for InfixOperator {
 }
 
 enum PostfixOperator {
-    Factorial, // <expr>!
-    Is(ast::Literal), // <expr> IS <literal>
+    Factorial,           // <expr>!
+    Is(ast::Literal),    // <expr> IS <literal>
     IsNot(ast::Literal), // <expr> IS NOT <literal>
 }
 
@@ -150,11 +146,12 @@ impl UnaryOperator for PostfixOperator {
         match self {
             Self::Factorial => ast::Operator::Factorial(lhs).into(),
             Self::Is(literal) => ast::Operator::Is(lhs, literal).into(),
-            Self::IsNot(literal) => ast::Operator::Not(ast::Operator::Is(lhs, literal).into()).into()            
+            Self::IsNot(literal) => {
+                ast::Operator::Not(ast::Operator::Is(lhs, literal).into()).into()
+            }
         }
     }
 }
-
 
 /// The `Parser` struct is responsible for parsing SQL queries.
 /// It takes a lexer as input and processes the tokens to generate
@@ -249,7 +246,7 @@ impl Parser<'_> {
             let mut alias = None;
 
             if self.lexer.next_is(Keyword::As.into()) {
-                alias = self.lexer.next_ident()?;
+                alias = Some(self.lexer.next_ident()?);
             }
 
             select.push(ast::AliasedExpression(expression, alias));
@@ -264,11 +261,86 @@ impl Parser<'_> {
         // first check for prefix (unary) operator. If there is one, get its rhs.
         // Otherwise, get the lhs of the expression
         let mut lhs = if let Some(prefix) = self.parse_prefix_operator(min_precedence) {
+            let at_precedence = prefix.precedence() + prefix.associativity();
+            prefix.build(self.parse_expression(at_precedence)?)
+        } else {
+            self.parse_expression_atom()?
+        };
+        // apply any postfix operators for left-hand side
+        while let Some(postfix) = self.parse_postfix_operator(min_precedence)? {
+            lhs = postfix.build(lhs);
+        }
 
-        } 
+        // apply infix operators, parsing right-hand side of the expression
+        while let Some(infix) = self.parse_infix_operator(min_precedence) {
+            let at_precedence = infix.precedence() + infix.associativity();
+            let rhs = self.parse_expression(at_precedence)?;
+            lhs = infix.build(lhs, rhs);
+        }
 
-        
-        todo!("Implement expression parsing")
+        // and finally for some expression, consider also other postfix operators
+        // e.g. 1 + NULL IS NULL
+        while let Some(postfix) = self.parse_postfix_operator(min_precedence)? {
+            lhs = postfix.build(lhs);
+        }
+
+        Ok(lhs)
+    }
+
+    /// Parses an atomic element of an expression
+    /// That can be one of:
+    /// - Literal
+    /// - Identifier
+    /// - Function call
+    /// - Parenthesized expression
+    fn parse_expression_atom(&mut self) -> Result<ast::Expression> {
+        let next = self
+            .lexer
+            .next()
+            .transpose()?
+            .ok_or(crate::error::Error::Syntax(
+                0,
+                format!("unexpected end of input"),
+            ))?;
+
+        Ok(match next {
+            // All columns `*`
+            Token::Asterisk => ast::Expression::All,
+            // Literal number
+            Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => {
+                ast::Literal::Integer(n.parse()?).into()
+            }
+            Token::Number(n) => ast::Literal::Float(n.parse()?).into(),
+            Token::String(s) => ast::Literal::String(s).into(),
+            Token::Keyword(Keyword::True) => ast::Literal::Boolean(true).into(),
+            Token::Keyword(Keyword::False) => ast::Literal::Boolean(false).into(),
+            Token::Keyword(Keyword::Null) => ast::Literal::Null.into(),
+            Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN).into(),
+            Token::Keyword(Keyword::Infinity) => ast::Literal::Float(f64::INFINITY).into(),
+            // function call
+            Token::Ident(func_name) if self.lexer.next_is(Token::ParenOpen) => {
+                let mut args = Vec::new();
+                while !self.lexer.next_is(Token::ParenClose) {
+                    if !args.is_empty() {
+                        self.lexer.expect_next(Token::Comma)?;
+                    }
+                    args.push(self.parse_expression(0)?);
+                }
+                ast::Expression::Function(func_name, args)
+            }
+            // Column name, can be qualified with table name
+            Token::Ident(table_name) if self.lexer.next_is(Token::Period) => {
+                ast::Expression::Column(Some(table_name), self.lexer.next_ident()?)
+            }
+            Token::Ident(col_name) => ast::Expression::Column(None, col_name),
+            // Parenthesized expression
+            Token::ParenOpen => {
+                let expr = self.parse_expression(0)?;
+                self.lexer.expect_next(Token::ParenClose)?;
+                expr
+            }
+            token => return syntax_error!(0, "Unexpected token: {token}, expression was expected"),
+        })
     }
 
     fn parse_prefix_operator(&mut self, min_precedence: Precedence) -> Option<PrefixOperator> {
@@ -282,6 +354,65 @@ impl Parser<'_> {
             Some(op).filter(|op| op.precedence() >= min_precedence)
         })
     }
+
+    /// Parses a postfix operator, if there is any. Minimal precedence is also considered
+    fn parse_postfix_operator(
+        &mut self,
+        min_precedence: Precedence,
+    ) -> Result<Option<PostfixOperator>> {
+        // Handle IS (NOT) NULL/NAN
+        if let Some(Token::Keyword(Keyword::Is)) = self.lexer.peek_transposed()? {
+            // cannot consume more tokens unless precedence is satisfied, so
+            // IS NULL is assumed
+            if PostfixOperator::Is(ast::Literal::Null).precedence() < min_precedence {
+                return Ok(None);
+            }
+            self.lexer.expect_next(Keyword::Is.into())?;
+            let is_not = self.lexer.next_is(Keyword::Not.into());
+            let value = match self.lexer.next_transposed()? {
+                Token::Keyword(Keyword::Null) => ast::Literal::Null,
+                Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN),
+                token => return syntax_error!(0, "Unexpected token: {token}"),
+            };
+            return Ok(Some(match is_not {
+                true => PostfixOperator::IsNot(value),
+                false => PostfixOperator::Is(value),
+            }));
+        }
+
+        Ok(self.lexer.next_if_map(|token| {
+            let op = match token {
+                Token::Exclamation => PostfixOperator::Factorial,
+                _ => return None,
+            };
+            Some(op).filter(|op| op.precedence() >= min_precedence)
+        }))
+    }
+
+    /// Parses an infix operator, if there is any. Minimal precedence is also considered
+    fn parse_infix_operator(&mut self, min_precedence: Precedence) -> Option<InfixOperator> {
+        self.lexer.next_if_map(|token| {
+            let operator = match token {
+                Token::Plus => InfixOperator::Add,
+                Token::Minus => InfixOperator::Subtract,
+                Token::Asterisk => InfixOperator::Multiply,
+                Token::Slash => InfixOperator::Divide,
+                Token::Percent => InfixOperator::Modulo,
+                Token::Equal => InfixOperator::Equals,
+                Token::NotEqual => InfixOperator::NotEquals,
+                Token::LessThan => InfixOperator::LessThan,
+                Token::LessThanOrEqual => InfixOperator::LessThanOrEquals,
+                Token::GreaterThan => InfixOperator::GreaterThan,
+                Token::GreaterThanOrEqual => InfixOperator::GreaterThanOrEquals,
+                Token::Keyword(Keyword::And) => InfixOperator::And,
+                Token::Keyword(Keyword::Or) => InfixOperator::Or,
+                Token::Keyword(Keyword::Like) => InfixOperator::Like,
+                Token::Caret => InfixOperator::Exponentiate,
+                _ => return None,
+            };
+            Some(operator).filter(|op| op.precedence() >= min_precedence)
+        })
+    }
 }
 
 /// TokenPeekableExt is an extension trait that extends the Peekable iterator over Tokens an
@@ -289,9 +420,10 @@ impl Parser<'_> {
 /// element in the iterator without consuming it, and returns an `Result<Option<T>>`
 trait TokenPeekableExt {
     fn peek_transposed(&mut self) -> crate::error::Result<Option<&Token>>;
+    fn next_transposed(&mut self) -> crate::error::Result<Token>;
     fn expect_next(&mut self, expected: Token) -> crate::error::Result<()>;
     fn next_is(&mut self, expected: Token) -> bool;
-    fn next_ident(&mut self) -> crate::error::Result<Option<String>>;
+    fn next_ident(&mut self) -> crate::error::Result<String>;
     fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T>;
 }
 
@@ -300,6 +432,13 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
         self.peek()
             .map(|r| r.as_ref().map_err(|err| err.clone()))
             .transpose()
+    }
+
+    fn next_transposed(&mut self) -> crate::error::Result<Token> {
+        self.next().transpose()?.ok_or(crate::error::Error::Syntax(
+            0,
+            "Unexpected end of input".to_string(),
+        ))
     }
 
     fn expect_next(&mut self, expected: Token) -> crate::error::Result<()> {
@@ -315,12 +454,12 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
         self.next_if_eq(&Ok(expected)).is_some()
     }
 
-    fn next_ident(&mut self) -> crate::error::Result<Option<String>> {
+    fn next_ident(&mut self) -> crate::error::Result<String> {
         let token = self.next().transpose()?;
         match token {
-            Some(Token::Ident(ident)) => Ok(Some(ident)),
+            Some(Token::Ident(ident)) => Ok(ident),
             Some(token) => syntax_error!(0, "Unexpected token: {token}, expect an identifier"),
-            None => Ok(None),
+            None => syntax_error!(0, "Unexpected end of input"),
         }
     }
 
@@ -332,5 +471,26 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
             self.next();
         }
         next_mapped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_expression() {
+        let mut parser = Parser::new("1 + 2 * 3");
+        let expr = parser.parse_expression(0).unwrap();
+        assert_eq!(
+            expr,
+            ast::Expression::Operator(ast::Operator::Add(
+                Box::new(ast::Expression::Literal(ast::Literal::Integer(1))),
+                Box::new(ast::Expression::Operator(ast::Operator::Multiply(
+                    Box::new(ast::Expression::Literal(ast::Literal::Integer(2))),
+                    Box::new(ast::Expression::Literal(ast::Literal::Integer(3)))
+                )))
+            ))
+        );
     }
 }
