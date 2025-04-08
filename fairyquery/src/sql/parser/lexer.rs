@@ -100,8 +100,10 @@ pub enum Keyword {
     From,
     Where,
     Join,
+    Inner,
     And,
     Or,
+    On,
     Group,
     By,
     Having,
@@ -128,7 +130,9 @@ impl TryFrom<&str> for Keyword {
         // to have a simple life, keywords from lexer will be lowercase
         // so we can just compare them directly with &str and just use an assertion here
         debug_assert!(
-            lexeme.chars().all(char::is_lowercase),
+            lexeme
+                .chars()
+                .all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_'),
             "keyword from lexer must be in lowercase"
         );
         Ok(match lexeme {
@@ -158,6 +162,8 @@ impl TryFrom<&str> for Keyword {
             "nan" => Self::NaN,
             "infinity" => Self::Infinity,
             "like" => Self::Like,
+            "inner" => Self::Inner,
+            "on" => Self::On,
             // again, short-circuit here so Err is actually returned
             _ => return Err("not a keyword"),
         })
@@ -193,6 +199,8 @@ impl std::fmt::Display for Keyword {
             Self::Infinity => "INFINITY",
             Self::Is => "IS",
             Self::Like => "LIKE",
+            Self::Inner => "INNER",
+            Self::On => "ON",
         })
     }
 }

@@ -213,7 +213,7 @@ impl Parser<'_> {
     fn parse_select(&mut self) -> Result<ast::Statement> {
         Ok(ast::Statement::Select {
             select: self.parse_select_clause()?,
-            from: todo!(),
+            from: self.parse_from_clause()?,
             r#where: todo!(),
             group_by: todo!(),
             having: todo!(),
@@ -246,13 +246,87 @@ impl Parser<'_> {
             let mut alias = None;
 
             if self.lexer.next_is(Keyword::As.into()) {
+                if expression == ast::Expression::All {
+                    return syntax_error!(0, "Cannot alias \'*\'");
+                }
                 alias = Some(self.lexer.next_ident()?);
             }
-
             select.push(ast::AliasedExpression(expression, alias));
+            if !self.lexer.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(select)
+    }
+
+    /// Parse FROM and JOIN clauses
+    /// The FROM clause specifies the tables from which to select data,
+    /// sometimes multiple tables, each divided by a comma.
+    /// The JOIN clause specifies how to join the tables together.
+    /// The FROM clause can be empty, in which case the query is a "SELECT" statement
+    /// without a FROM clause.
+    fn parse_from_clause(&mut self) -> Result<Vec<ast::From>> {
+        // maybe we dont need to select from a table
+        let mut from = vec![];
+        if !self.lexer.next_is(Keyword::From.into()) {
+            return Ok(from);
         }
 
-        todo!()
+        loop {
+            let mut table: ast::From = self.parse_from_table()?;
+            while let Some(join_type) = self.parse_from_join()? {
+                let left = Box::new(table);
+                let right = Box::new(self.parse_from_table()?);
+                let mut on_predicate = None;
+                // TODO: Only if a cross join is supported, its needed to check
+                // if the join type is cross join and whether to add the on predicate
+                self.lexer.expect_next(Keyword::On.into())?;
+                on_predicate = Some(self.parse_expression(0)?);
+                table = ast::From::Join {
+                    left,
+                    right,
+                    on: on_predicate,
+                    join_type,
+                }
+            }
+            from.push(table);
+            // TODO: Only if a cross join is supported, its needed to check
+            // if there is a comma for a cross join
+            // if !self.lexer.next_is(Token::Comma) {
+            //     break;
+            // }
+            break;
+        }
+        Ok(from)
+    }
+
+    fn parse_from_table(&mut self) -> Result<ast::From> {
+        let table_name = self.lexer.next_ident()?;
+        let mut alias = None;
+        if self.lexer.next_is(Keyword::As.into())
+            || matches!(self.lexer.peek_transposed()?, Some(Token::Ident(_)))
+        {
+            alias = Some(self.lexer.next_ident()?);
+        }
+        Ok(ast::From::Table {
+            name: table_name,
+            alias,
+        })
+    }
+
+    fn parse_from_join(&mut self) -> Result<Option<ast::JoinType>> {
+        if self.lexer.next_is(Keyword::Join.into()) {
+            return Ok(Some(ast::JoinType::Inner));
+        }
+
+        if self.lexer.next_is(Keyword::Inner.into()) {
+            self.lexer.expect_next(Keyword::Join.into())?;
+            return Ok(Some(ast::JoinType::Inner));
+        }
+
+        // TODO: Add left join, right join and cross join
+
+        Ok(None)
     }
 
     /// Parses an expression - it must contain at least one atomic element of expression.
@@ -441,6 +515,8 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
         ))
     }
 
+    /// Checks if the next token is equal to the expected token.
+    /// If it is, the token is consumed, otherwise an error is returned.
     fn expect_next(&mut self, expected: Token) -> crate::error::Result<()> {
         let token = self.next().transpose()?;
         match token {
@@ -450,10 +526,16 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
         }
     }
 
+    /// Checks if the next token is equal to the expected token.
+    /// If it is, the token is consumed and `true` is returned,
+    /// otherwise `false` is returned meaning the token was not consumed.
     fn next_is(&mut self, expected: Token) -> bool {
         self.next_if_eq(&Ok(expected)).is_some()
     }
 
+    /// Consumes next token from iterator and checks if it is an identifier.
+    /// If it is, the identifier is returned, otherwise an error is returned.
+    /// If the token is `None`, an error is returned.
     fn next_ident(&mut self) -> crate::error::Result<String> {
         let token = self.next().transpose()?;
         match token {
@@ -463,6 +545,9 @@ impl<'a, I: Iterator<Item = crate::error::Result<Token>>> TokenPeekableExt for P
         }
     }
 
+    /// Peeks next token and applies the mapping closure `f` to it.
+    /// If the mapping closure returns `Some`, the token is consumed and returned.
+    /// If the mapping closure returns `None`, the token is not consumed and `None` is returned.
     fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T> {
         // Peek at the next token and map it if it exists call the mapping closure `f`
         let next_mapped = self.peek_transposed().unwrap_or(None).map(f)?;
@@ -493,4 +578,82 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn test_parse_expression_2() {
+        let mut parser = Parser::new("NOT(1 * 2 - 3)");
+        let expr = parser.parse_expression(0).unwrap();
+        assert_eq!(
+            expr,
+            ast::Expression::Operator(ast::Operator::Not(Box::new(ast::Expression::Operator(
+                ast::Operator::Subtract(
+                    Box::new(ast::Expression::Operator(ast::Operator::Multiply(
+                        Box::new(ast::Expression::Literal(ast::Literal::Integer(1))),
+                        Box::new(ast::Expression::Literal(ast::Literal::Integer(2))),
+                    ))),
+                    Box::new(ast::Expression::Literal(ast::Literal::Integer(3)))
+                )
+            ))))
+        );
+    }
+
+    #[test]
+    fn test_parse_select_from() {
+        let mut parser = Parser::new("FROM table1 AS tb");
+        let expr = parser.parse_from_clause().unwrap();
+        assert_eq!(
+            expr,
+            vec![ast::From::Table {
+                name: "table1".to_string(),
+                alias: Some("tb".to_string())
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_select_from_join() {
+        let mut parser =
+            Parser::new("FROM table1 AS tb JOIN table2 AS tb2 ON table1.id = table2.id");
+        let expr = parser.parse_from_clause().unwrap();
+        assert_eq!(
+            expr,
+            vec![ast::From::Join {
+                left: Box::new(ast::From::Table {
+                    name: "table1".to_string(),
+                    alias: Some("tb".to_owned())
+                }),
+                right: Box::new(ast::From::Table {
+                    name: "table2".to_string(),
+                    alias: Some("tb2".to_owned())
+                }),
+                join_type: ast::JoinType::Inner,
+                on: Some(ast::Expression::Operator(ast::Operator::Equals(
+                    Box::new(ast::Expression::Column(
+                        Some("table1".to_string()),
+                        "id".to_string()
+                    )),
+                    Box::new(ast::Expression::Column(
+                        Some("table2".to_string()),
+                        "id".to_string()
+                    ))
+                )))
+            }]
+        );
+    }
+
+    // TODO: Finish this test
+    // #[test]
+    // fn test_parse_select_from_join_multiple() {
+    //     let mut parser = Parser::new(
+    //         "FROM table1 AS tb JOIN table2 ON tb.id = table2.id JOIN table3 AS tb3 ON table2.id = table3.id",
+    //     );
+    //     let expr = parser.parse_from_clause().unwrap();
+    //     assert_eq!(
+    //         expr,
+    //         vec![ast::From::Table {
+    //             name: "table1".to_string(),
+    //             alias: Some("tb".to_string())
+    //         }]
+    //     );
+    // }
 }

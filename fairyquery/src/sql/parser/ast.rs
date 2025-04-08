@@ -35,7 +35,7 @@ pub enum Statement {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum From {
     Table {
         name: String,
@@ -49,7 +49,7 @@ pub enum From {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum JoinType {
     Inner,
     Left,
@@ -70,7 +70,8 @@ pub enum OrderDirection {
 pub enum Expression {
     /// For all columns in a table (`*`)
     All,
-    /// A column reference with optional alias
+    /// A column reference with optional table name specified
+    /// e. g. `table.column` or `column`
     Column(Option<String>, String),
     /// A literal value
     Literal(Literal),
